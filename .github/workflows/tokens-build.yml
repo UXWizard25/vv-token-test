@@ -1,54 +1,33 @@
-name: Tokens – Build
+name: Design Tokens Build
 
 on:
-  workflow_dispatch:     # manuell startbar
   push:
-    branches: [ main, develop ]
-    paths:
-      - 'src/design-tokens/**'
-      - 'scripts/**'
-      - 'package.json'
-      - 'style-dictionary.config.mjs'
-
-concurrency:
-  group: tokens-build-${{ github.ref }}
-  cancel-in-progress: true
+    branches: [ main ]
+  workflow_dispatch: {}
 
 jobs:
-  build:
-    name: Build tokens
+  build-tokens:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-      - name: Use Node.js 18
-        uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
         with:
-          node-version: 18   # kein cache (Lockfile-frei)
+          node-version: 18
 
       - name: Install dependencies
-        run: npm install     # ersetzt npm ci
+        run: npm ci
 
-      - name: Preprocess Figma variables
-        run: npm run prebuild
-
-      - name: Build with Style Dictionary
+      - name: Run token build
         run: npm run build
 
-      - name: Upload build artifacts (dist)
-        uses: actions/upload-artifact@v4
-        with:
-          name: tokens-build
-          path: build/**
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload processed token sources (debug)
-        uses: actions/upload-artifact@v4
-        with:
-          name: processed-tokens
-          path: src/processed-tokens/**
-          if-no-files-found: warn
-          retention-days: 7
+      # Optionally, add a step to commit and push the updated build/ outputs if you want to version-control them:
+      # - name: Commit tokens
+      #   run: |
+      #     git config --local user.name "github-actions"
+      #     git config --local user.email "github-actions@users.noreply.github.com"
+      #     git add build/
+      #     git commit -m "Update design tokens [skip ci]" || echo "No changes to commit"
+      #     git push
