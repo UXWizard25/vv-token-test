@@ -1,1 +1,11 @@
-"build": "npm run prebuild && style-dictionary build --config ./style-dictionary.config.mjs"
+{
+  "name": "bild-design-tokens",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/parse-figma-variables.mjs && style-dictionary build --config style-dictionary.config.mjs"
+  },
+  "devDependencies": {
+    "style-dictionary": "^4.0.0"
+  }
+}
