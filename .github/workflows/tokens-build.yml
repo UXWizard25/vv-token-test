@@ -1,26 +1,14 @@
 name: Tokens – Build
 
 on:
+  workflow_dispatch:     # manuell startbar
   push:
-    branches:
-      - main
-      - develop
+    branches: [ main, develop ]
     paths:
       - 'src/design-tokens/**'
-      - 'src/processed-tokens/**'
       - 'scripts/**'
-      - 'style-dictionary.config.mjs'
       - 'package.json'
-      - 'package-lock.json'
-  pull_request:
-    paths:
-      - 'src/design-tokens/**'
-      - 'src/processed-tokens/**'
-      - 'scripts/**'
       - 'style-dictionary.config.mjs'
-      - 'package.json'
-      - 'package-lock.json'
-  workflow_dispatch:
 
 concurrency:
   group: tokens-build-${{ github.ref }}
@@ -31,9 +19,6 @@ jobs:
     name: Build tokens
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: read
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,13 +26,11 @@ jobs:
       - name: Use Node.js 18
         uses: actions/setup-node@v4
         with:
-          node-version: 18
-          cache: 'npm'
+          node-version: 18   # kein cache (Lockfile-frei)
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install     # ersetzt npm ci
 
-      # Preprocessor zerlegt den VariableVisualizer-Export in SD-taugliche Files
       - name: Preprocess Figma variables
         run: npm run prebuild
 
@@ -58,8 +41,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tokens-build
-          path: |
-            build/**
+          path: build/**
           if-no-files-found: error
           retention-days: 14
 
@@ -67,7 +49,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: processed-tokens
-          path: |
-            src/processed-tokens/**
+          path: src/processed-tokens/**
           if-no-files-found: warn
           retention-days: 7
