@@ -1,170 +1,177 @@
-// scripts/parse-figma-variables.mjs
-// Converts VariableVisualizer export to SD-friendly JSON per layer/mode.
+import fs from 'fs';
+import path from 'path';
 
-import fs from 'node:fs';
-import path from 'node:path';
+// Paths
+const figmaInputPath = 'src/design-tokens/BILD Design System-variables-full.json';
+const outputDir = 'tokens';
 
-const INPUT = path.resolve('src/design-tokens/BILD Design System-variables-full.json');
-const OUTDIR = path.resolve('src/processed-tokens');
+// Load the raw Figma variables JSON
+const figmaData = JSON.parse(fs.readFileSync(figmaInputPath, 'utf-8'));
 
-if (!fs.existsSync(INPUT)) {
-  console.error(`❌ Input not found: ${INPUT}`);
-  process.exit(1);
-}
-fs.mkdirSync(OUTDIR, { recursive: true });
-
-const data = JSON.parse(fs.readFileSync(INPUT, 'utf-8'));
-const collections = data.collections || [];
-
-// Build index for alias resolution
-const varById = new Map();
-for (const col of collections) {
-  for (const v of col.variables) {
-    varById.set(v.id, { collection: col.name, var: v });
+// Prepare a lookup for variable IDs to token name (for resolving aliases)
+const idToTokenPath = {};
+for (const collection of figmaData.collections) {
+  for (const variable of collection.variables) {
+    idToTokenPath[variable.id] = variable.name;
   }
 }
 
-const kebab = (s) => {
-  return String(s)
-    .replace(/\([^)]*\)/g, '')
-    .replace(/[^A-Za-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .replace(/^\d/, (m) => 'x' + m) // avoid leading digits
-    .toLowerCase() || 'x';
-};
-const toPath = (name) => name.split('/').filter(Boolean).map(kebab);
+// Ensure output directory exists
+fs.mkdirSync(outputDir, { recursive: true });
 
-const rgbaToHex = (c) => {
-  const r = Math.round(c.r * 255);
-  const g = Math.round(c.g * 255);
-  const b = Math.round(c.b * 255);
-  if (c.a == null || c.a === 1) return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
-  const a = Math.round(c.a * 255);
-  return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}${a.toString(16).padStart(2,'0')}`;
-};
-
-const assignNested = (obj, pathArr, value) => {
-  let cur = obj;
-  for (let i = 0; i < pathArr.length - 1; i++) {
-    const key = pathArr[i];
-    cur[key] = cur[key] || {};
-    cur = cur[key];
+// Utility: write a token object to a nested JSON structure
+const writeToken = (fileMap, tokenPath, value, attributes = {}) => {
+  // Traverse or create nested structure according to path segments
+  const segments = tokenPath.split('/');
+  let obj = fileMap;
+  for (let i = 0; i < segments.length - 1; i++) {
+    const seg = segments[i];
+    obj[seg] = obj[seg] || {};  // create nested object if not exists
+    obj = obj[seg];
   }
-  cur[pathArr[pathArr.length - 1]] = value;
+  const lastKey = segments[segments.length - 1];
+  obj[lastKey] = {}; 
+  obj[lastKey].value = value;
+  // Only add attributes if provided
+  if (Object.keys(attributes).length) {
+    obj[lastKey].attributes = attributes;
+  }
 };
 
-const resolveValue = (v, modeId, stack = new Set()) => {
-  const raw = v.valuesByMode?.[modeId];
-  if (raw == null) return null;
+// Containers for each output JSON file content
+const tokensByFile = {};
 
-  // VARIABLE_ALIAS → follow id
-  if (typeof raw === 'object' && raw.type === 'VARIABLE_ALIAS') {
-    const refId = raw.id;
-    if (!refId || stack.has(refId) || !varById.has(refId)) return null;
-    stack.add(refId);
-    const { var: refVar } = varById.get(refId);
-    return resolveValue(refVar, modeId, stack);
-  }
-
-  // RGBA → hex
-  if (typeof raw === 'object' && 'r' in raw && 'g' in raw && 'b' in raw) {
-    return rgbaToHex(raw);
-  }
-
-  // boolean/string/float as-is
-  return raw;
-};
-
-// Buckets → filename mapping helpers
-const outputs = new Map(); // filename -> object
-
-const out = (filename) => {
-  if (!outputs.has(filename)) outputs.set(filename, {});
-  return outputs.get(filename);
-};
-
-const BASE_COLLECTIONS = new Set(['_ColorPrimitive', '_SpacePrimitive', '_SizePrimitive', '_FontPrimitive']);
-
-for (const col of collections) {
-  // Base (no explicit modes beyond "Value")
-  if (BASE_COLLECTIONS.has(col.name)) {
-    const modeId = col.modes?.[0]?.modeId;
-    if (!modeId) continue;
-    for (const v of col.variables) {
-      const val = resolveValue(v, modeId);
-      if (val == null) continue;
-      assignNested(out('base.json'), [kebab(col.name), ...toPath(v.name)], val);
-    }
-  }
-
-  // Brand Token Mapping (spacing/sizing/type)
-  if (col.name === 'BrandTokenMapping') {
-    for (const m of col.modes || []) {
-      const file = `brand-${kebab(m.name)}.json`;
-      for (const v of col.variables) {
-        const val = resolveValue(v, m.modeId);
-        if (val == null) continue;
-        assignNested(out(file), ['brand-token-mapping', ...toPath(v.name)], val);
-      }
-    }
-  }
-
-  // Brand Color Mapping
-  if (col.name === 'BrandColorMapping') {
-    for (const m of col.modes || []) {
-      const file = `brand-colors-${kebab(m.name)}.json`;
-      for (const v of col.variables) {
-        const val = resolveValue(v, m.modeId);
-        if (val == null) continue;
-        assignNested(out(file), ['brand-color-mapping', ...toPath(v.name)], val);
-      }
-    }
-  }
-
-  // Density
-  if (col.name === 'Density') {
-    for (const m of col.modes || []) {
-      const file = `density-${kebab(m.name)}.json`;
-      for (const v of col.variables) {
-        const val = resolveValue(v, m.modeId);
-        if (val == null) continue;
-        assignNested(out(file), ['density', ...toPath(v.name)], val);
-      }
-    }
-  }
-
-  // Semantic: Color Mode (Light/Dark)
-  if (col.name === 'ColorMode') {
-    for (const m of col.modes || []) {
-      const file = `color-${kebab(m.name)}.json`;
-      for (const v of col.variables) {
-        const val = resolveValue(v, m.modeId);
-        if (val == null) continue;
-        assignNested(out(file), ['color-mode', ...toPath(v.name)], val);
-      }
-    }
-  }
-
-  // Semantic: Breakpoint Mode (XS/SM/MD/LG)
-  if (col.name === 'BreakpointMode') {
-    for (const m of col.modes || []) {
-      // examples: "XS - 320px", "SM - 390px (compact)" → use first token before space/hyphen
-      const key = kebab(m.name.split(' ')[0]);
-      const file = `breakpoint-${key}.json`;
-      for (const v of col.variables) {
-        const val = resolveValue(v, m.modeId);
-        if (val == null) continue;
-        assignNested(out(file), ['breakpoint-mode', key, ...toPath(v.name)], val);
-      }
+// Determine mode IDs for primary brand "BILD" (for collections that have brand modes)
+let bildBrandModeId = {};
+for (const collection of figmaData.collections) {
+  if ((collection.name === 'BrandColorMapping' || collection.name === 'BrandTokenMapping') && collection.modes) {
+    const bildMode = collection.modes.find(m => m.name === 'BILD');
+    if (bildMode) {
+      bildBrandModeId[collection.name] = bildMode.modeId;
     }
   }
 }
 
-// Write files
-for (const [filename, obj] of outputs.entries()) {
-  const target = path.join(OUTDIR, filename);
-  fs.writeFileSync(target, JSON.stringify(obj, null, 2), 'utf-8');
-  console.log(`✓ Wrote ${path.relative(process.cwd(), target)}`);
+// Process each collection in the Figma data
+for (const collection of figmaData.collections) {
+  const collName = collection.name;
+  const modes = collection.modes || [];
+  // Determine output file naming
+  if (!modes.length || modes.length === 1) {
+    // Single-mode collection (or no explicit modes)
+    const fileName = `${collName.replace(/^_/, '').replace(/\s+/g, '')}.json`;
+    tokensByFile[fileName] = {};
+
+    // Use default mode (or only mode) values
+    const modeId = collection.defaultModeId || (modes[0] ? modes[0].modeId : null);
+    for (const variable of collection.variables) {
+      const rawValue = variable.valuesByMode[modeId];
+      let tokenValue;
+      let tokenAttributes = {};
+
+      // Check if value is an alias to another variable
+      if (rawValue && typeof rawValue === 'object' && rawValue.type === 'VARIABLE_ALIAS') {
+        const targetId = rawValue.id;
+        const targetPath = idToTokenPath[targetId];
+        if (targetPath) {
+          // Convert to Style Dictionary reference format e.g. {Category.Subcategory.TokenName}
+          const ref = targetPath.replace(/\//g, '.');
+          tokenValue = `{${ref}}`;
+        } else {
+          tokenValue = null;
+        }
+      } else {
+        tokenValue = rawValue;
+      }
+
+      // If color value is an RGBA object from Figma, keep it as an object (Style Dictionary will handle conversion)
+      // If numeric (FLOAT) value, determine if it represents a size (dimension) or something else
+      if (variable.resolvedType === 'FLOAT' && typeof tokenValue === 'number') {
+        const nameSegments = variable.name.split('/');
+        const topLevel = nameSegments[0].toLowerCase();
+        if (topLevel === 'opacity') {
+          // Convert opacity percentage (0–100 in Figma) to 0–1 range
+          tokenValue = tokenValue / 100;
+          // (No unit suffix added, as these will be used as unitless opacity values)
+        } else if (variable.name.includes('FontWeight')) {
+          // Font weight numeric values – leave as number with no unit
+        } else {
+          // All other floats are treated as sizes (pixel values)
+          tokenAttributes.category = 'size';
+        }
+      }
+
+      // Write this token to the appropriate JSON structure
+      writeToken(tokensByFile[fileName], variable.name, tokenValue, tokenAttributes);
+    }
+  } else {
+    // Multi-mode collections – split by each mode
+    if (collName === 'BrandColorMapping' || collName === 'BrandTokenMapping') {
+      // For brand-specific collections, only output the primary brand (BILD) tokens in this pipeline
+      const modeId = bildBrandModeId[collName];
+      const modeLabel = 'BILD';
+      const fileName = `${collName.replace(/^_/, '').replace(/\s+/g, '')}-${modeLabel}.json`;
+      tokensByFile[fileName] = {};
+
+      for (const variable of collection.variables) {
+        const rawValue = variable.valuesByMode[modeId];
+        let tokenValue;
+        let tokenAttributes = {};
+
+        if (rawValue && typeof rawValue === 'object' && rawValue.type === 'VARIABLE_ALIAS') {
+          const targetPath = idToTokenPath[rawValue.id];
+          tokenValue = targetPath ? `{${targetPath.replace(/\//g, '.')}}` : null;
+        } else {
+          tokenValue = rawValue;
+        }
+        if (variable.resolvedType === 'FLOAT' && typeof tokenValue === 'number') {
+          const topLevel = variable.name.split('/')[0].toLowerCase();
+          if (topLevel === 'opacity') {
+            tokenValue = tokenValue / 100;
+          } else if (!variable.name.includes('FontWeight')) {
+            tokenAttributes.category = 'size';
+          }
+        }
+        writeToken(tokensByFile[fileName], variable.name, tokenValue, tokenAttributes);
+      }
+    } else if (collName === 'ColorMode' || collName === 'Density' || collName === 'BreakpointMode') {
+      // Mode-based collections (themes, density, breakpoints)
+      for (const mode of collection.modes) {
+        // For BreakpointMode, simplify mode name (e.g. "XS" from "XS - 320px")
+        const modeLabel = collName === 'BreakpointMode' ? mode.name.split(' ')[0] : mode.name;
+        const fileName = `${collName.replace(/\s+/g, '')}-${modeLabel}.json`;
+        tokensByFile[fileName] = {};
+
+        const modeId = mode.modeId;
+        for (const variable of collection.variables) {
+          const rawValue = variable.valuesByMode[modeId];
+          let tokenValue;
+          let tokenAttributes = {};
+
+          if (rawValue && typeof rawValue === 'object' && rawValue.type === 'VARIABLE_ALIAS') {
+            const targetPath = idToTokenPath[rawValue.id];
+            tokenValue = targetPath ? `{${targetPath.replace(/\//g, '.')}}` : null;
+          } else {
+            tokenValue = rawValue;
+          }
+          if (variable.resolvedType === 'FLOAT' && typeof tokenValue === 'number') {
+            const topLevel = variable.name.split('/')[0].toLowerCase();
+            if (topLevel === 'opacity') {
+              tokenValue = tokenValue / 100;
+            } else if (!variable.name.includes('FontWeight')) {
+              tokenAttributes.category = 'size';
+            }
+          }
+          writeToken(tokensByFile[fileName], variable.name, tokenValue, tokenAttributes);
+        }
+      }
+    }
+  }
 }
 
-console.log(`\n✨ Generated ${outputs.size} token sources in ${path.relative(process.cwd(), OUTDIR)}`);
+// Write out each tokens JSON file
+for (const [fileName, tokenData] of Object.entries(tokensByFile)) {
+  const filePath = path.join(outputDir, fileName);
+  fs.writeFileSync(filePath, JSON.stringify(tokenData, null, 2));
+}
+console.log(`✅ Figma tokens parsed into ${Object.keys(tokensByFile).length} JSON files in '${outputDir}/'`);
