@@ -9,7 +9,7 @@
   },
   "scripts": {
     "prebuild": "node ./scripts/parse-figma-variables.mjs",
-    "build": "npm run prebuild && style-dictionary build",
+    "build": "npm run prebuild && style-dictionary build --config style-dictionary.config.cjs",
     "clean": "rimraf build src/processed-tokens",
     "postbuild": "node -e \"console.log('✅ Build finished')\""
   },
